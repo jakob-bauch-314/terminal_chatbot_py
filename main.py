@@ -72,6 +72,9 @@ class Ui:
         self.chat = chat
         self.input_str = ""
         self.n = None
+        self.stdscr = stdscr
+    
+    def load(self):
         curses.curs_set(1)
 
         # Initialize terminal colors
@@ -80,7 +83,7 @@ class Ui:
             curses.init_pair(n+1, chat_client.foreground_color, chat_client.background_color)
         
         # Initialize windows
-        self.height, self.width = stdscr.getmaxyx()
+        self.height, self.width = self.stdscr.getmaxyx()
         self.box = curses.newwin(self.height-3, self.width, 0, 0)
         self.input_win = curses.newwin(3, self.width, self.height-3, 0)
 
@@ -106,7 +109,7 @@ class Ui:
         self.box.refresh()
         self.input_win.clear()
         self.input_win.border()
-        self.input_win.addstr(1, 2, "You: " + self.input_str[:self.width-8], curses.color_pair(2))
+        self.input_win.addstr(1, 2, "You: " + self.input_str[:self.width-8], curses.color_pair(1))
         self.input_win.refresh()
 
         if self.input_mode:
@@ -178,19 +181,16 @@ class Ui:
 
 class ChatServer:
 
-    def __init__(self, chat_clients):
+    def __init__(self):
 
         # set values
-        self.chat_clients = chat_clients
-        self.history = ChatHistory.load(self)
+        self.chat_clients = []
+        self.history = ChatHistory([])
+        #self.history = ChatHistory.load(self)
 
         # give parent element reference to children
         for chat_client in self.chat_clients:
             chat_client.chat = self
-
-    def run(self):
-        last_message = self.history.messages[-1]
-        last_message.receiver.receive_message(last_message.sender, last_message.content)
     
     def unfinished_messages(self):
         return [chat_client.unfinished_message() for chat_client in self.chat_clients if chat_client.inbox_content != ""]
@@ -203,6 +203,26 @@ class ChatServer:
 
     def get_index_by_name(self, name):
         pass
+
+    def add_client(self, name, fg_color, bg_color, on_receive):
+        chat_client = ChatClient(
+            name = name,
+            fg_color = fg_color,
+            bg_color = bg_color,
+            chat = self,
+            on_receive = on_receive
+        )
+        self.chat_clients.append(chat_client)
+        return chat_client
+    
+    def load_history(self):
+        self.history = ChatHistory.load(self)
+    
+    def run(self):
+        chatbot_client = self.chat_clients[2]
+        user_client = self.chat_clients[0]
+        chatbot_client.update_message(user_client, "hello there")
+        chatbot_client.send_message()
 
 # ---------------------- Message Class ---------------------- #
 
@@ -276,7 +296,9 @@ class ChatHistory:
         try:
             return ChatHistory.from_xml_object(ET.parse('chat_log.xml'), chat)
         except ET.ParseError:
-            return ChatHistory([Message(f"hello, i'm {chatbot.name}. how can i assist you?", chatbot, user, chat)])
+            A = chat.chat_clients[0]
+            B = chat.chat_clients[1]
+            return ChatHistory([Message(f"hello, i'm {A.name}. how can i assist you?", A, B, chat)])
     
     @staticmethod
     def from_xml_object(xml_object, chat):
@@ -297,18 +319,13 @@ class ChatHistory:
     
     def append(self, sender, receiver, content):
         self.messages.append(Message(content, sender, receiver, self))
-        self.save()
+        #self.save()
 
-# ---------------------- ChatClient Base Class ---------------------- #
+# ---------------------- ChatClient Class ---------------------- #
 
 class ChatClient:
-    def __init__(self,
-        name = "chat_client",
-        fg_color = curses.COLOR_WHITE,
-        bg_color = curses.COLOR_BLACK,
-        on_receive = lambda self, other, content: send_message(self, other, "I'm a chat_client")
-    ):
-        self.chat = None
+    def __init__(self, name, fg_color, bg_color, chat, on_receive):
+        self.chat = chat
         self.name = name
         self.foreground_color = fg_color
         self.background_color = bg_color
@@ -322,11 +339,7 @@ class ChatClient:
         self.chat.history.append(self, message_receiver, message_content)
         self.inbox_content = ""
         self.inbox_receiver = None
-        message_receiver.receive_message(self, message_content)
-    
-    def receive_message(self, other, content):
-        self.on_receive(self, other, content)
-        #self.send_message(other, "I'm a chat_client")
+        message_receiver.on_receive(message_receiver, self, message_content)
     
     def update_message(self, other, content):
         self.inbox_receiver = other
@@ -335,85 +348,109 @@ class ChatClient:
     def unfinished_message(self):
         return Message(self.inbox_content, self, self.inbox_receiver, self.chat)
 
+# ---------------------- ChatAgent Base Class ---------------------- #
+
+class ChatAgent():
+
+    def __init__(self, name = "chat agent", fg_color = curses.COLOR_WHITE, bg_color = curses.COLOR_BLACK, chat = None):
+        agent_instance = self
+        self.client = chat.add_client(
+            name=name,
+            fg_color=fg_color,
+            bg_color=bg_color,
+            on_receive = lambda self, other, content: agent_instance.receive_message(other, content))
+    
+    def receive_message(self, other, content):
+        time.sleep(1)
+        self.client.update_message(other, f"hi, i'm {self.client.name}")
+        self.client.send_message()
+
 # ---------------------- Chatbot Class ---------------------- #
 
-class Chatbot(ChatClient):
-    def __init__(self, name, model):
-        super().__init__(name=name, fg_color=curses.COLOR_GREEN)
+class Chatbot(ChatAgent):
+    def __init__(self, chat, name, user, terminal, model):
+        super().__init__(name=name, fg_color=curses.COLOR_MAGENTA, chat=chat)
         self.model = ChatOllama(model=model, streaming=True)
         self.prompt = ChatPromptTemplate.from_template(chatbot_template)
         self.chain = self.prompt | self.model
+        self.user = user
+        self.terminal = terminal
 
     def receive_message(self, other, content):
         """Process user messages and generate AI responses."""
-        message = Message(content, self, other, self.chat)
+        message = Message(content, self.client, other, self.client.chat)
 
         raw_response = ""
         for chunk in self.chain.stream({
-            "chatbot_name": self.name,
-            "user_name": user.name,
-            "terminal_name": terminal.name,
-            "history": self.chat.history.to_xml_string(),
+            "chatbot_name": self.client.name,
+            "user_name": self.user.name,
+            "terminal_name": self.terminal.name,
+            "history": self.client.chat.history.to_xml_string(),
             "message": message.to_xml_string()
                 }):
             raw_response += chunk.content
-            parsed_response = Message.from_xml_string(raw_response, self.chat)
+            parsed_response = Message.from_xml_string(raw_response, self.client.chat)
 
             if parsed_response.content is not None:
-                self.update_message(parsed_response.receiver, edgy_string(parsed_response.content))
+                self.client.update_message(parsed_response.receiver, edgy_string(parsed_response.content))
         
-        parsed_response = Message.from_xml_string(raw_response, self.chat)
-        self.update_message(parsed_response.receiver, parsed_response.content)
-        self.send_message()
-
-class System(ChatClient):
-    def __init__(self):
-        sper().__init__(name="system", fg_color=curses.COLOR_RED)
+        parsed_response = Message.from_xml_string(raw_response, self.client.chat)
+        self.client.update_message(parsed_response.receiver, parsed_response.content)
+        self.client.send_message()
 
 # ---------------------- User Class ---------------------- #
 
-class User(ChatClient):
-    def __init__(self, name):
-        super().__init__(name=name)
-        self.ui = None
+class User(ChatAgent):
+    def __init__(self, chat, name, ui):
+        super().__init__(name="user", fg_color=curses.COLOR_WHITE, chat=chat)
+        self.name="asdf"
+        self.ui = ui
     
     def receive_message(self, other, content):
         self.ui.input_mode = True
         while self.ui.input_mode:
             time.sleep(0.1)
-            self.update_message(other, self.ui.input_str)
+            self.client.update_message(other, self.ui.input_str)
         self.ui.input_str = ""
-        self.send_message()
+        self.client.send_message()
 
 # ---------------------- Terminal Class ---------------------- #
 
-class Terminal(ChatClient):
-    def __init__(self):
-        super().__init__(name="terminal", fg_color=curses.COLOR_CYAN)
+class Terminal(ChatAgent):
+    def __init__(self, chat):
+        super().__init__(name="terminal", fg_color=curses.COLOR_GREEN, chat=chat)
     
     def receive_message(self, other, content):
         proc = subprocess.Popen([content], stdout=subprocess.PIPE, shell=True)
         out, err = proc.communicate()
-        self.update_message(other, f"output: '{out}', errors: '{err}'")
-        self.send_message()
+        self.client.update_message(other, f"output: '{out}', errors: '{err}'")
+        self.client.send_message()
 
 # ---------------------- Main Function ---------------------- #
 
-chatbot, user, terminal = Chatbot("Chatbot", "gemma3"), User("jakob"), Terminal()
-
 def main(stdscr):
-    chat_server = ChatServer([chatbot, user, terminal])
+
+    chat_server = ChatServer()
     ui = Ui(chat_server, stdscr)
-    user.ui = ui
-    
+
+    user = User(chat_server, "user", ui)
+    terminal = Terminal(chat_server)
+    chatbot = Chatbot(chat_server, "chatbot", user.client, terminal.client, "gemma3")
+
+    #user.client.update_message(chatbot.client, "hello there")
+    #user.client.send_message()
+
+    ui.load()
+
     chat_thread=threading.Thread(target=chat_server.run, args=())
     ui_thread=threading.Thread(target=ui.run, args=())
+
     chat_thread.start()
     ui_thread.start()
+
     chat_thread.join()
     ui_thread.join()
 
-    # user.update_message(chatbot, "hello there")
-    # user.send_message()
+    time.sleep(100)
 
 curses.wrapper(main)
