@@ -66,15 +66,15 @@ def edgy_string(base_string):
 # classes
 
 class Ui:
-    def __init__(self, chat, stdscr):
+    def __init__(self, chat, stdscr, client):
         """Initialize UI with curses settings and chat instance."""
         self.input_mode = False
         self.chat = chat
         self.input_str = ""
         self.n = None
         self.stdscr = stdscr
-    
-    def load(self):
+        self.client = client
+
         curses.curs_set(1)
 
         # Initialize terminal colors
@@ -86,7 +86,6 @@ class Ui:
         self.height, self.width = self.stdscr.getmaxyx()
         self.box = curses.newwin(self.height-3, self.width, 0, 0)
         self.input_win = curses.newwin(3, self.width, self.height-3, 0)
-
 
     def update(self):
         """Update UI with chat messages and user input."""
@@ -347,6 +346,9 @@ class ChatClient:
     
     def unfinished_message(self):
         return Message(self.inbox_content, self, self.inbox_receiver, self.chat)
+    
+    def load_ui(self, stdscr):
+        self.ui = Ui(self.chat, stdscr, self)
 
 # ---------------------- ChatAgent Base Class ---------------------- #
 
@@ -407,11 +409,11 @@ class User(ChatAgent):
         self.ui = ui
     
     def receive_message(self, other, content):
-        self.ui.input_mode = True
-        while self.ui.input_mode:
+        self.client.ui.input_mode = True
+        while self.client.ui.input_mode:
             time.sleep(0.1)
-            self.client.update_message(other, self.ui.input_str)
-        self.ui.input_str = ""
+            self.client.update_message(other, self.client.ui.input_str)
+        self.client.ui.input_str = ""
         self.client.send_message()
 
 # ---------------------- Terminal Class ---------------------- #
@@ -431,26 +433,24 @@ class Terminal(ChatAgent):
 def main(stdscr):
 
     chat_server = ChatServer()
-    ui = Ui(chat_server, stdscr)
+    #ui = Ui(chat_server, stdscr, None)
 
-    user = User(chat_server, "user", ui)
+    user = User(chat_server, "user", None)
     terminal = Terminal(chat_server)
     chatbot = Chatbot(chat_server, "chatbot", user.client, terminal.client, "gemma3")
+
+    user.client.load_ui(stdscr)
 
     #user.client.update_message(chatbot.client, "hello there")
     #user.client.send_message()
 
-    ui.load()
-
     chat_thread=threading.Thread(target=chat_server.run, args=())
-    ui_thread=threading.Thread(target=ui.run, args=())
+    ui_thread=threading.Thread(target=user.client.ui.run, args=())
 
     chat_thread.start()
     ui_thread.start()
 
     chat_thread.join()
     ui_thread.join()
-
-    time.sleep(100)
 
 curses.wrapper(main)
