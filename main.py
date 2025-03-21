@@ -189,10 +189,6 @@ class ChatServer:
             chat_client.chat = self
 
     def run(self):
-        # chat_client_A = self.chat_clients[0]
-        # chat_client_B = self.chat_clients[1]
-        # chat_client_A.update_message(chat_client_B, f"hello, i'm {chat_client_A.name}. how can i assist you?")
-        # chat_client_A.send_message()
         last_message = self.history.messages[-1]
         last_message.receiver.receive_message(last_message.sender, last_message.content)
     
@@ -237,7 +233,7 @@ class Message:
         # in case of xml fragment
         # -------------------------------------------------------
         try:
-            return Message.from_xml_object(ET.fromstring(f"<chat>{raw_response}</chat>")[0], chat)
+            return Message.from_xml_object(ET.fromstring(f"<chat>{raw_response}</chat>").find("message"), chat)
         except ET.ParseError:
             pass
         except IndexError:
@@ -245,7 +241,7 @@ class Message:
         # in case of unfinished response
         # -------------------------------------------------------
         try:
-            return Message.from_xml_object(ET.fromstring(f"<chat>{raw_response}</message></chat>")[0], chat)
+            return Message.from_xml_object(ET.fromstring(f"<chat>{raw_response}</message></chat>").find("message"), chat)
         except ET.ParseError:
             pass
         except IndexError:
@@ -280,9 +276,7 @@ class ChatHistory:
         try:
             return ChatHistory.from_xml_object(ET.parse('chat_log.xml'), chat)
         except ET.ParseError:
-            chat_client_A = chat.chat_clients[0]
-            chat_client_B = chat.chat_clients[1]
-            return ChatHistory([Message(f"hello, i'm {chat_client_A.name}. how can i assist you?", chat_client_A, chat_client_B, chat)])
+            return ChatHistory([Message(f"hello, i'm {chatbot.name}. how can i assist you?", chatbot, user, chat)])
     
     @staticmethod
     def from_xml_object(xml_object, chat):
@@ -308,17 +302,21 @@ class ChatHistory:
 # ---------------------- ChatClient Base Class ---------------------- #
 
 class ChatClient:
-    def __init__(self, name="chat_client", fg_color=curses.COLOR_WHITE, bg_color=curses.COLOR_BLACK):
+    def __init__(self,
+        name = "chat_client",
+        fg_color = curses.COLOR_WHITE,
+        bg_color = curses.COLOR_BLACK,
+        on_receive = lambda self, other, content: send_message(self, other, "I'm a chat_client")
+    ):
         self.chat = None
         self.name = name
         self.foreground_color = fg_color
         self.background_color = bg_color
         self.inbox_content = ""
         self.inbox_receiver = None
+        self.on_receive = on_receive
     
     def send_message(self):
-        #print(self.inbox_receiver)
-        #quit()
         message_receiver = self.inbox_receiver
         message_content = self.inbox_content
         self.chat.history.append(self, message_receiver, message_content)
@@ -327,7 +325,8 @@ class ChatClient:
         message_receiver.receive_message(self, message_content)
     
     def receive_message(self, other, content):
-        self.send_message(other, "I'm an chat_client")
+        self.on_receive(self, other, content)
+        #self.send_message(other, "I'm a chat_client")
     
     def update_message(self, other, content):
         self.inbox_receiver = other
@@ -351,14 +350,15 @@ class Chatbot(ChatClient):
 
         raw_response = ""
         for chunk in self.chain.stream({
-            "chatbot_name": self.chat.chat_clients[0].name,
-            "user_name": self.chat.chat_clients[1].name,
-            "terminal_name": self.chat.chat_clients[2].name,
+            "chatbot_name": self.name,
+            "user_name": user.name,
+            "terminal_name": terminal.name,
             "history": self.chat.history.to_xml_string(),
             "message": message.to_xml_string()
                 }):
             raw_response += chunk.content
             parsed_response = Message.from_xml_string(raw_response, self.chat)
+
             if parsed_response.content is not None:
                 self.update_message(parsed_response.receiver, edgy_string(parsed_response.content))
         
@@ -366,40 +366,9 @@ class Chatbot(ChatClient):
         self.update_message(parsed_response.receiver, parsed_response.content)
         self.send_message()
 
-    @staticmethod
-    def parse_message(raw_response):
-
-        # in case of correct xml
-        # -------------------------------------------------------
-        try:
-            return ET.fromstring(raw_response)
-        except ET.ParseError:
-            pass
-        # in case of xml fragment
-        # -------------------------------------------------------
-        try:
-            return ET.fromstring(f"<chat>{raw_response}</chat>")[0]
-        except ET.ParseError:
-            pass
-        except IndexError:
-            pass
-        # in case of unfinished response
-        # -------------------------------------------------------
-        try:
-            return ET.fromstring(f"<chat>{raw_response}</message></chat>")[0]
-        except ET.ParseError:
-            pass
-        except IndexError:
-            pass
-        # in case of error.
-        # -------------------------------------------------------
-        return ET.fromstring(f"<message to='' from='chatbot'></message>")
-
-        error_message = ET.Element("message")
-        error_message.set("from", self.name)
-        error_message.set("to", self.chat.chat_clients[1].name)
-        error_message.text = f"error: '{html.escape(raw_response)}' is not a valid response."
-        return error_message
+class System(ChatClient):
+    def __init__(self):
+        sper().__init__(name="system", fg_color=curses.COLOR_RED)
 
 # ---------------------- User Class ---------------------- #
 
@@ -429,8 +398,10 @@ class Terminal(ChatClient):
         self.send_message()
 
 # ---------------------- Main Function ---------------------- #
+
+chatbot, user, terminal = Chatbot("Chatbot", "gemma3"), User("jakob"), Terminal()
+
 def main(stdscr):
-    chatbot, user, terminal = Chatbot("Chatbot", "gemma3"), User("jakob"), Terminal()
     chat_server = ChatServer([chatbot, user, terminal])
     ui = Ui(chat_server, stdscr)
     user.ui = ui
@@ -442,7 +413,7 @@ def main(stdscr):
     chat_thread.join()
     ui_thread.join()
 
-    user.update_message(chatbot, "hello there")
-    user.send_message()
+    # user.update_message(chatbot, "hello there")
+    # user.send_message()
 
 curses.wrapper(main)
