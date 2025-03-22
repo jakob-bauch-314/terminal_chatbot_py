@@ -141,10 +141,9 @@ class ChatUI:
 
         y_offset = 1
 
-        # Display the first unfinished message (if any)
-        unfinished_msgs = self.chat_server.get_unfinished_messages()
-        if unfinished_msgs:
-            y_offset = self.display_message(y_offset, unfinished_msgs[0])
+        # Display unfinished messages
+        for message in self.chat_server.get_unfinished_messages():
+            y_offset = self.display_message(y_offset, message)
 
         # Display chat history in reverse order
         for msg in reversed(self.chat_server.history.messages):
@@ -394,6 +393,8 @@ class ChatClient:
     Represents a participant in the chat.
     """
 
+    chat_clients = []
+
     def __init__(self, name, fg_color, bg_color, chat_server, on_receive_callback):
         self.chat_server = chat_server
         self.name = name
@@ -402,6 +403,8 @@ class ChatClient:
         self.inbox_text = ""
         self.inbox_receiver = None
         self.on_receive_callback = on_receive_callback  # Callback function when a message is received
+
+        self.chat_clients.append(self)
 
     def send_message(self):
         """
@@ -433,6 +436,15 @@ class ChatClient:
         Initializes the UI for this client.
         """
         self.ui = ChatUI(self.chat_server, stdscr, self)
+    
+    def from_string(self, client_name, chat_server):
+        """
+        Retrieves a chat client by its name.
+        """
+        for client in chat_server.chat_clients:
+            if client.name == client_name:
+                return client
+        return None
 
 
 # ------------------------------------------------------------------------------
